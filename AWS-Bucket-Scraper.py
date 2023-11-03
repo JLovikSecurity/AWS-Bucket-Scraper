@@ -3,7 +3,7 @@ import botocore
 import os
 
 # List of public S3 buckets along with their regions
-public_buckets = [("research.staging.retailer-logos", "us-east-1"), ("research.staging.retailer-logos", "us-east-1")]
+public_buckets = [("mybucket1", "us-east-1"), ("mybucket2", "us-east-1")]
 
 def list_files_in_bucket(bucket_name, region, output_file, extension_statistics):
     try:
