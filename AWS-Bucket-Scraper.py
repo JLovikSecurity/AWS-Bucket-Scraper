@@ -3,7 +3,7 @@ import botocore
 import os
 
 # List of public S3 buckets along with their regions
-public_buckets = [("myBucket1", "us-east-1"), ("myBucket2", "us-east-1")]
+public_buckets = [("research.staging.retailer-logos", "us-east-1"), ("research.staging.retailer-logos", "us-east-1")]
 
 def list_files_in_bucket(bucket_name, region, output_file, extension_statistics):
     try:
@@ -44,18 +44,19 @@ def list_files_in_bucket(bucket_name, region, output_file, extension_statistics)
                 print(f"Bucket: {bucket_name}, An error occurred in region {region}: {e}\n")
                 file.write(f"Bucket: {bucket_name}, An error occurred in region {region}: {e}\n")
 
-output_file = 'AWS-Bucket-Scraper.txt'  # Specify the name of the output file
-with open(output_file, 'w') as file:  # Create or clear the output file
-    file.write('')  # Clear the file
+if __name__ == '__main__':
+    output_file = 'AWS-Bucket-Scraper.txt'  # Specify the name of the output file
+    with open(output_file, 'w') as file:  # Create or clear the output file
+        file.write('')  # Clear the file
 
-extension_statistics = {}  # Dictionary to collect extension statistics
+    extension_statistics = {}  # Dictionary to collect extension statistics
 
-for bucket, region in public_buckets:
-    list_files_in_bucket(bucket, region, output_file, extension_statistics)
+    for bucket, region in public_buckets:
+        list_files_in_bucket(bucket, region, output_file, extension_statistics)
 
-# Print file extension statistics across all buckets
-with open(output_file, 'a') as file:  # Open the file in append mode
-    file.write("\nFile Extension Statistics Across All Buckets:\n")
-    for extension, count in extension_statistics.items():
-        print(f"Extension: {extension}, Count: {count}\n")
-        file
+    # Print file extension statistics across all buckets
+    with open(output_file, 'a') as file:  # Open the file in append mode
+        file.write("\nFile Extension Statistics Across All Buckets:\n")
+        for extension, count in extension_statistics.items():
+            print(f"Extension: {extension}, Count: {count}\n")
+            file
