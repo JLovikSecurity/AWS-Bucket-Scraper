@@ -1,0 +1,42 @@
+import requests
+import re
+import os
+
+buckets = ["MyBucket"]
+url = "https://storage.googleapis.com/"
+output_file = "GCP-Bucket-Scraper.txt"
+
+
+for bucket in buckets:
+    response = requests.get(url+bucket)
+    if response.status_code == 200:
+        data = response.text
+
+        # Use regular expressions to extract content between <Key> and </Key> tags and between <Size> and </Size> tags
+        key_pattern = re.compile(r'<Key>(.*?)<\/Key>')
+        size_pattern = re.compile(r'<Size>(.*?)<\/Size>')
+        keys = key_pattern.findall(data)
+        sizes = size_pattern.findall(data)
+
+        with open(output_file, 'w') as file:  # Open the output file in write mode
+            for key, size in zip(keys, sizes):
+                # Convert size to megabytes
+                size_mb = int(size) / (1024 * 1024)
+                file.write(f"Bucket: {bucket}, File: {key}, Size: {size_mb:.2f} MB\n")
+                print(f"Bucket: {bucket}, File: {key}, Size: {size_mb:.2f} MB\n")
+
+            # Calculate statistics for file extensions
+            extension_count = {}
+            for key in keys:
+                _, file_extension = os.path.splitext(key)
+                if file_extension:
+                    extension_count[file_extension] = extension_count.get(file_extension, 0) + 1
+
+            file.write("\nFile Extension Statistics:\n")
+            for extension, count in extension_count.items():
+                file.write(f"Extension: {extension}, Count: {count}\n")
+                print(f"Extension: {extension}, Count: {count}\n")
+
+        print(f"Output saved to {output_file}")
+    else:
+        print("Failed to fetch data. Status code:", response.status_code)
