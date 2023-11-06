@@ -1,62 +1,45 @@
-import boto3
-import botocore
+import requests
+import re
 import os
-# List of public S3 buckets along with their regions
-public_buckets = [("Bucket1", "us-east-1")]
 
-def list_files_in_bucket(bucket_name, region, output_file, extension_statistics):
-    try:
-        # Create a session without providing credentials
-        session = boto3.Session()
-        config = botocore.config.Config(signature_version=botocore.UNSIGNED)
-        s3 = session.client('s3', region_name=region, config=config)
+buckets = ["Bucket1"]
+url = "https://storage.googleapis.com/"
+output_file = "GCP-Bucket-Scraper.txt"
 
-        # List objects in the bucket
-        objects = s3.list_objects_v2(Bucket=bucket_name)
+extension_count = {}  # Dictionary to count file extensions
 
-        extension_count = {}  # Dictionary to count file extensions
+with open(output_file, 'w') as file:  # Open the output file in write mode
+    for bucket in buckets:
+        response = requests.get(url + bucket)
+        if response.status_code == 200:
+            data = response.text
 
-        with open(output_file, 'a') as file:  # Open the file in append mode
-            for obj in objects.get('Contents', []):
-                file_key = obj['Key']
-                file_size_mb = obj['Size'] / (1024 * 1024)
-                link = (f"https://{bucket_name}.s3.amazonaws.com/{file_key}\n")
-                print(f"Bucket: {bucket_name}, Region: {region}, Link: {link}, File: {file_key}, Size: {file_size_mb:.2f} MB\n")
-                file.write(f"Bucket: {bucket_name}, Region: {region}, Link: {link}, File: {file_key}, Size: {file_size_mb:.2f} MB\n")
-                # Count file extensions
-                _, file_extension = os.path.splitext(file_key)
+            # Use regular expressions to extract content between <Key> and </Key> tags and between <Size> and </Size> tags
+            key_pattern = re.compile(r'<Key>(.*?)<\/Key>')
+            size_pattern = re.compile(r'<Size>(.*?)<\/Size>')
+            keys = key_pattern.findall(data)
+            sizes = size_pattern.findall(data)
+            
+
+            for key, size in zip(keys, sizes):
+                # Convert size to megabytes
+                size_mb = int(size) / (1024 * 1024)
+                link = url + bucket + "/" + key
+                file.write(f"Bucket: {bucket}, File: {key}, Link: {link}, Size: {size_mb:.2f} MB\n")
+                print(f"Bucket: {bucket}, File: {key}, Link: {link}, Size: {size_mb:.2f} MB\n")
+
+            # Count file extensions
+            for key in keys:
+                _, file_extension = os.path.splitext(key)
                 if file_extension:
                     extension_count[file_extension] = extension_count.get(file_extension, 0) + 1
-
-        # Close the 'with' block for objects here
-
-        # Update the extension statistics dictionary
-        for extension, count in extension_count.items():
-            extension_statistics[extension] = extension_statistics.get(extension, 0) + count
-
-    except botocore.exceptions.ClientError as e:
-        if e.response['Error']['Code'] == 'NoSuchBucket':
-            with open(output_file, 'a') as file:
-                print(f"Bucket: {bucket_name} not found in region {region}.\n")
-                file.write(f"Bucket: {bucket_name} not found in region {region}.\n")
         else:
-            with open(output_file, 'a') as file:
-                print(f"Bucket: {bucket_name}, An error occurred in region {region}: {e}\n")
-                file.write(f"Bucket: {bucket_name}, An error occurred in region {region}: {e}\n")
-
-if __name__ == '__main__':
-    output_file = 'AWS-Bucket-Scraper.txt'  # Specify the name of the output file
-    with open(output_file, 'w') as file:  # Create or clear the output file
-        file.write('')  # Clear the file
-
-    extension_statistics = {}  # Dictionary to collect extension statistics
-
-    for bucket, region in public_buckets:
-        list_files_in_bucket(bucket, region, output_file, extension_statistics)
+            print(f"Failed to fetch data for {bucket}. Status code:", response.status_code)
 
     # Print file extension statistics across all buckets
-    with open(output_file, 'a') as file:  # Open the file in append mode
-        file.write("\nFile Extension Statistics Across All Buckets:\n")
-        for extension, count in extension_statistics.items():
-            print(f"Extension: {extension}, Count: {count}\n")
-            file.write(f"Extension: {extension}, Count: {count}\n")
+    file.write("\nFile Extension Statistics Across All Buckets:\n")
+    for extension, count in extension_count.items():
+        file.write(f"Extension: {extension}, Count: {count}\n")
+        print(f"Extension: {extension}, Count: {count}\n")
+
+print(f"Output saved to {output_file}")
