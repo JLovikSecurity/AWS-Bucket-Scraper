@@ -31,9 +31,6 @@ with open(output_file, 'w') as file:  # Open the output file in write mode
                 _, file_extension = os.path.splitext(key)
                 if file_extension:
                     extension_count[file_extension] = extension_count.get(file_extension, 0) + 1
-
-            print(f"Output for {bucket} saved to {output_file}")
-
         else:
             print(f"Failed to fetch data for {bucket}. Status code:", response.status_code)
 
