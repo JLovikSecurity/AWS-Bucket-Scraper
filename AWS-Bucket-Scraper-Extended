@@ -1,0 +1,221 @@
+###
+### Author: Jordon Lovik 
+### Jordon@loviksecurity.com
+###
+### AWS Public S3 Bucket Scanner
+### 
+### This script scans public AWS S3 buckets and generates detailed reports
+### of their contents, including URL-encoded links and file extension statistics.
+###
+### USAGE:
+###
+### 1. Using the default bucket list defined in the script:
+###    python script.py
+###
+### 2. Scanning a single bucket via command line:
+###    python script.py my-public-bucket us-east-1
+###
+### 3. Scanning multiple buckets via command line:
+###    python script.py bucket1 us-east-1 bucket2 us-west-2 bucket3 eu-central-1
+###
+### 4. Combining multiple buckets into a single output file:
+###    python script.py --combine bucket1 us-east-1 bucket2 us-west-2
+###
+### Command-line format: [--combine] bucket_name region [bucket_name region ...]
+### Arguments must be provided in pairs (bucket name followed by its region)
+### Use --combine flag to output all results to a single JSON file
+###
+### OUTPUT:
+### - Without --combine: Creates separate JSON files for each bucket scanned
+### - With --combine: Creates a single JSON file containing all bucket results
+### - Output filename format: BucketName_YYYYMMDD_HHMMSS.json (or Combined_YYYYMMDD_HHMMSS.json)
+### - Files include URL-encoded links, file sizes, and extension statistics
+### - Extension statistics are sorted by count (most common first)
+###
+### EXAMPLES:
+### python script.py company-data-bucket us-east-1
+### python script.py logs-bucket us-west-2 backups-bucket eu-west-1
+### python script.py --combine bucket1 us-east-1 bucket2 us-west-2 bucket3 eu-west-1
+###
+
+import boto3
+import botocore
+import os
+import sys
+import json
+from urllib.parse import quote
+from datetime import datetime
+
+# Default list of public S3 buckets along with their regions
+# This will be used if no command-line arguments are provided
+public_buckets = [
+    ("Bucket1", "us-east-1"),
+    ("Bucket2", "us-west-2"),
+    ("Bucket3", "eu-west-1")
+]
+
+def list_files_in_bucket(bucket_name, region):
+    """
+    List all files in a bucket and return structured data.
+    Returns a dictionary with bucket info, files, and extension statistics.
+    """
+    result = {
+        "bucket_name": bucket_name,
+        "region": region,
+        "scan_timestamp": datetime.now().isoformat(),
+        "files": [],
+        "extension_statistics": {},
+        "errors": []
+    }
+    
+    try:
+        # Create a session without providing credentials
+        session = boto3.Session()
+        config = botocore.config.Config(signature_version=botocore.UNSIGNED)
+        s3 = session.client('s3', region_name=region, config=config)
+
+        # List objects in the bucket
+        objects = s3.list_objects_v2(Bucket=bucket_name)
+
+        extension_count = {}  # Dictionary to count file extensions
+
+        for obj in objects.get('Contents', []):
+            file_key = obj['Key']
+            file_size_bytes = obj['Size']
+            file_size_mb = file_size_bytes / (1024 * 1024)
+            
+            # URL encode the file key to handle spaces and special characters
+            encoded_key = quote(file_key, safe='/')
+            link = f"https://{bucket_name}.s3.amazonaws.com/{encoded_key}"
+            
+            # Add file info to results
+            file_info = {
+                "key": file_key,
+                "url": link,
+                "size_bytes": file_size_bytes,
+                "size_mb": round(file_size_mb, 2),
+                "last_modified": obj['LastModified'].isoformat()
+            }
+            result["files"].append(file_info)
+            
+            print(f"Bucket: {bucket_name}, Region: {region}, Link: {link}, File: {file_key}, Size: {file_size_mb:.2f} MB")
+            
+            # Count file extensions
+            _, file_extension = os.path.splitext(file_key)
+            if file_extension:
+                extension_count[file_extension] = extension_count.get(file_extension, 0) + 1
+
+        # Sort extensions by count (descending order)
+        sorted_extensions = sorted(extension_count.items(), key=lambda x: x[1], reverse=True)
+        result["extension_statistics"] = dict(sorted_extensions)
+        
+        # Print extension statistics
+        for extension, count in sorted_extensions:
+            print(f"Bucket: {bucket_name}, Extension: {extension}, Count: {count}")
+
+    except botocore.exceptions.ClientError as e:
+        error_msg = ""
+        if e.response['Error']['Code'] == 'NoSuchBucket':
+            error_msg = f"Bucket {bucket_name} not found in region {region}"
+            print(error_msg)
+        else:
+            error_msg = f"An error occurred in region {region}: {str(e)}"
+            print(error_msg)
+        result["errors"].append(error_msg)
+    
+    return result
+
+def parse_command_line_args():
+    """
+    Parse command-line arguments for bucket names, regions, and combine flag.
+    Expected format: [--combine] bucket1 region1 bucket2 region2 ...
+    Returns a tuple: (combine_flag, list of tuples [(bucket1, region1), ...])
+    """
+    if len(sys.argv) < 2:
+        return False, None  # No command-line arguments provided
+    
+    args = sys.argv[1:]
+    combine = False
+    
+    # Check for --combine flag
+    if args[0] == '--combine':
+        combine = True
+        args = args[1:]  # Remove the flag from args
+    
+    if len(args) == 0:
+        return combine, None
+    
+    # Check if arguments come in pairs
+    if len(args) % 2 != 0:
+        print("Error: Arguments must be provided in pairs (bucket_name region)")
+        print("Usage: python script.py [--combine] [bucket1 region1 bucket2 region2 ...]")
+        print("Example: python script.py --combine my-bucket us-east-1 another-bucket eu-west-1")
+        sys.exit(1)
+    
+    # Parse arguments into tuples
+    buckets = []
+    for i in range(0, len(args), 2):
+        bucket_name = args[i]
+        region = args[i + 1]
+        buckets.append((bucket_name, region))
+    
+    return combine, buckets
+
+if __name__ == '__main__':
+    # Try to get buckets from command-line arguments
+    combine_mode, cmd_buckets = parse_command_line_args()
+    
+    # Use command-line buckets if provided, otherwise use default list
+    if cmd_buckets:
+        buckets_to_process = cmd_buckets
+        print(f"Using {len(buckets_to_process)} bucket(s) from command-line arguments")
+        print(f"Combine mode: {'ON' if combine_mode else 'OFF'}\n")
+    else:
+        buckets_to_process = public_buckets
+        print(f"Using {len(buckets_to_process)} bucket(s) from default list")
+        print(f"Combine mode: {'ON' if combine_mode else 'OFF'}\n")
+    
+    if combine_mode:
+        # COMBINE MODE: All buckets in one JSON file
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = f'Combined_{timestamp}.json'
+        
+        combined_results = {
+            "scan_timestamp": datetime.now().isoformat(),
+            "total_buckets": len(buckets_to_process),
+            "buckets": []
+        }
+        
+        for bucket, region in buckets_to_process:
+            print(f"\nScanning bucket: {bucket} in region: {region}")
+            print("=" * 80)
+            bucket_result = list_files_in_bucket(bucket, region)
+            combined_results["buckets"].append(bucket_result)
+            print(f"Completed scanning {bucket}\n")
+        
+        # Write combined results to single JSON file
+        with open(output_file, 'w') as f:
+            json.dump(combined_results, f, indent=2)
+        
+        print(f"\n{'=' * 80}")
+        print(f"All results saved to: {output_file}")
+        print(f"Total buckets scanned: {len(buckets_to_process)}")
+        
+    else:
+        # SEPARATE MODE: Individual JSON file per bucket
+        for bucket, region in buckets_to_process:
+            print(f"\nScanning bucket: {bucket} in region: {region}")
+            print("=" * 80)
+            
+            # Generate unique output filename for each bucket with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_file = f'{bucket}_{timestamp}.json'
+            
+            # Scan the bucket
+            bucket_result = list_files_in_bucket(bucket, region)
+            
+            # Write results to JSON file
+            with open(output_file, 'w') as f:
+                json.dump(bucket_result, f, indent=2)
+            
+            print(f"\nCompleted scanning {bucket}. Results saved to {output_file}\n")
