@@ -12,30 +12,45 @@
 ### 1. Using the default bucket list defined in the script:
 ###    python script.py
 ###
-### 2. Scanning a single bucket via command line:
+### 2. Scanning a single bucket (auto-detect region):
+###    python script.py my-public-bucket
+###
+### 3. Scanning a single bucket with explicit region:
 ###    python script.py my-public-bucket us-east-1
 ###
-### 3. Scanning multiple buckets via command line:
-###    python script.py bucket1 us-east-1 bucket2 us-west-2 bucket3 eu-central-1
+### 4. Scanning multiple buckets (auto-detect regions):
+###    python script.py bucket1 bucket2 bucket3
 ###
-### 4. Combining multiple buckets into a single output file:
+### 5. Scanning multiple buckets with explicit regions:
+###    python script.py bucket1 us-east-1 bucket2 us-west-2
+###
+### 6. Mixed mode - some with regions, some without:
+###    python script.py bucket1 bucket2 us-west-2 bucket3 bucket4 eu-central-1
+###
+### 7. Combining multiple buckets into a single output file:
+###    python script.py --combine bucket1 bucket2 bucket3
 ###    python script.py --combine bucket1 us-east-1 bucket2 us-west-2
 ###
-### Command-line format: [--combine] bucket_name region [bucket_name region ...]
-### Arguments must be provided in pairs (bucket name followed by its region)
-### Use --combine flag to output all results to a single JSON file
+### Command-line format: [--combine] bucket_name [region] [bucket_name [region] ...]
+### - Bucket names can be provided alone (region will be auto-detected)
+### - Or provide bucket_name region pairs for explicit region specification
+### - You can mix both styles in the same command
+### - Use --combine flag to output all results to a single JSON file
 ###
 ### OUTPUT:
 ### - Without --combine: Creates separate JSON files for each bucket scanned
 ### - With --combine: Creates a single JSON file containing all bucket results
 ### - Output filename format: BucketName_YYYYMMDD_HHMMSS.json (or Combined_YYYYMMDD_HHMMSS.json)
-### - Files include URL-encoded links, file sizes, and extension statistics
+### - Files include bucket name, region, URL-encoded links, file sizes, and extension statistics
 ### - Extension statistics are sorted by count (most common first)
 ###
 ### EXAMPLES:
-### python script.py company-data-bucket us-east-1
-### python script.py logs-bucket us-west-2 backups-bucket eu-west-1
-### python script.py --combine bucket1 us-east-1 bucket2 us-west-2 bucket3 eu-west-1
+### python script.py company-data-bucket
+### python script.py bucket1 bucket2 bucket3
+### python script.py logs-bucket us-west-2 backups-bucket
+### python script.py bucket1 bucket2 us-west-2 bucket3 eu-west-1 bucket4
+### python script.py --combine bucket1 bucket2 bucket3
+### python script.py --combine bucket1 us-east-1 bucket2 us-west-2
 ###
 
 import boto3
@@ -48,11 +63,50 @@ from datetime import datetime
 
 # Default list of public S3 buckets along with their regions
 # This will be used if no command-line arguments are provided
+# Region can be None to auto-detect
 public_buckets = [
-    ("Bucket1", "us-east-1"),
-    ("Bucket2", "us-west-2"),
-    ("Bucket3", "eu-west-1")
+    ("Bucket1", None),  # Auto-detect region
+    ("Bucket2", "us-west-2"),  # Explicit region
+    ("Bucket3", None)  # Auto-detect region
 ]
+
+def get_bucket_region(bucket_name):
+    """
+    Automatically detect the region of an S3 bucket.
+    Returns the region name or None if detection fails.
+    """
+    try:
+        # Create a client without credentials for public access
+        session = boto3.Session()
+        config = botocore.config.Config(signature_version=botocore.UNSIGNED)
+        
+        # Use us-east-1 as the default region for the initial client
+        s3 = session.client('s3', region_name='us-east-1', config=config)
+        
+        # Get the bucket location
+        response = s3.get_bucket_location(Bucket=bucket_name)
+        
+        # The location constraint is None for us-east-1
+        region = response['LocationConstraint']
+        if region is None:
+            region = 'us-east-1'
+        
+        print(f"Auto-detected region for bucket '{bucket_name}': {region}")
+        return region
+        
+    except botocore.exceptions.ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchBucket':
+            print(f"Error: Bucket '{bucket_name}' does not exist")
+        elif error_code == 'AccessDenied':
+            print(f"Error: Access denied when detecting region for bucket '{bucket_name}'")
+            print(f"The bucket may be private or you may need to specify the region explicitly")
+        else:
+            print(f"Error detecting region for bucket '{bucket_name}': {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error detecting region for bucket '{bucket_name}': {e}")
+        return None
 
 def list_files_in_bucket(bucket_name, region):
     """
@@ -88,8 +142,10 @@ def list_files_in_bucket(bucket_name, region):
             encoded_key = quote(file_key, safe='/')
             link = f"https://{bucket_name}.s3.amazonaws.com/{encoded_key}"
             
-            # Add file info to results
+            # Add file info to results - now includes bucket_name and region
             file_info = {
+                "bucket_name": bucket_name,
+                "region": region,
                 "key": file_key,
                 "url": link,
                 "size_bytes": file_size_bytes,
@@ -125,11 +181,26 @@ def list_files_in_bucket(bucket_name, region):
     
     return result
 
+def is_valid_region(region_str):
+    """
+    Check if a string looks like a valid AWS region.
+    Returns True if it matches the pattern of AWS regions.
+    """
+    # Common AWS region patterns: us-east-1, eu-west-2, ap-southeast-1, etc.
+    valid_prefixes = ['us-', 'eu-', 'ap-', 'sa-', 'ca-', 'me-', 'af-', 'cn-']
+    return any(region_str.startswith(prefix) for prefix in valid_prefixes)
+
 def parse_command_line_args():
     """
-    Parse command-line arguments for bucket names, regions, and combine flag.
-    Expected format: [--combine] bucket1 region1 bucket2 region2 ...
+    Parse command-line arguments for bucket names, optional regions, and combine flag.
+    Expected format: [--combine] bucket1 [region1] bucket2 [region2] ...
     Returns a tuple: (combine_flag, list of tuples [(bucket1, region1), ...])
+    Region will be None if not provided (for auto-detection)
+    
+    This function intelligently handles mixed input:
+    - bucket1 bucket2 bucket3 (all auto-detect)
+    - bucket1 us-east-1 bucket2 us-west-2 (all explicit)
+    - bucket1 bucket2 us-west-2 bucket3 (mixed: bucket1 auto, bucket2 explicit, bucket3 auto)
     """
     if len(sys.argv) < 2:
         return False, None  # No command-line arguments provided
@@ -145,18 +216,20 @@ def parse_command_line_args():
     if len(args) == 0:
         return combine, None
     
-    # Check if arguments come in pairs
-    if len(args) % 2 != 0:
-        print("Error: Arguments must be provided in pairs (bucket_name region)")
-        print("Usage: python script.py [--combine] [bucket1 region1 bucket2 region2 ...]")
-        print("Example: python script.py --combine my-bucket us-east-1 another-bucket eu-west-1")
-        sys.exit(1)
-    
-    # Parse arguments into tuples
+    # Parse arguments - can be bucket names alone or bucket-region pairs
     buckets = []
-    for i in range(0, len(args), 2):
+    i = 0
+    while i < len(args):
         bucket_name = args[i]
-        region = args[i + 1]
+        region = None
+        
+        # Check if the next argument exists and is a region
+        if i + 1 < len(args) and is_valid_region(args[i + 1]):
+            region = args[i + 1]
+            i += 2  # Skip both bucket and region
+        else:
+            i += 1  # Skip just the bucket, region will be auto-detected
+        
         buckets.append((bucket_name, region))
     
     return combine, buckets
@@ -175,6 +248,26 @@ if __name__ == '__main__':
         print(f"Using {len(buckets_to_process)} bucket(s) from default list")
         print(f"Combine mode: {'ON' if combine_mode else 'OFF'}\n")
     
+    # Auto-detect regions where needed
+    processed_buckets = []
+    for bucket, region in buckets_to_process:
+        if region is None:
+            print(f"Auto-detecting region for bucket: {bucket}")
+            detected_region = get_bucket_region(bucket)
+            if detected_region is None:
+                print(f"Skipping bucket '{bucket}' - could not detect region\n")
+                continue
+            processed_buckets.append((bucket, detected_region))
+        else:
+            print(f"Using explicit region '{region}' for bucket: {bucket}")
+            processed_buckets.append((bucket, region))
+    
+    if not processed_buckets:
+        print("No valid buckets to process. Exiting.")
+        sys.exit(1)
+    
+    print()  # Blank line for readability
+    
     if combine_mode:
         # COMBINE MODE: All buckets in one JSON file
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -182,11 +275,11 @@ if __name__ == '__main__':
         
         combined_results = {
             "scan_timestamp": datetime.now().isoformat(),
-            "total_buckets": len(buckets_to_process),
+            "total_buckets": len(processed_buckets),
             "buckets": []
         }
         
-        for bucket, region in buckets_to_process:
+        for bucket, region in processed_buckets:
             print(f"\nScanning bucket: {bucket} in region: {region}")
             print("=" * 80)
             bucket_result = list_files_in_bucket(bucket, region)
@@ -199,11 +292,11 @@ if __name__ == '__main__':
         
         print(f"\n{'=' * 80}")
         print(f"All results saved to: {output_file}")
-        print(f"Total buckets scanned: {len(buckets_to_process)}")
+        print(f"Total buckets scanned: {len(processed_buckets)}")
         
     else:
         # SEPARATE MODE: Individual JSON file per bucket
-        for bucket, region in buckets_to_process:
+        for bucket, region in processed_buckets:
             print(f"\nScanning bucket: {bucket} in region: {region}")
             print("=" * 80)
             
