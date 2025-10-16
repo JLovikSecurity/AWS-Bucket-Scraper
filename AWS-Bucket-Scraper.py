@@ -1,3 +1,7 @@
+###
+### Author: Jordon Lovik 
+### Jordon@loviksecurity.com
+###
 import boto3
 import botocore
 import os
