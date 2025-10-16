@@ -70,13 +70,38 @@ public_buckets = [
     ("Bucket3", None)  # Auto-detect region
 ]
 
+# Common AWS regions to try when auto-detecting
+COMMON_REGIONS = [
+    'us-east-1',
+    'us-east-2',
+    'us-west-1',
+    'us-west-2',
+    'eu-west-1',
+    'eu-west-2',
+    'eu-west-3',
+    'eu-central-1',
+    'eu-north-1',
+    'ap-southeast-1',
+    'ap-southeast-2',
+    'ap-northeast-1',
+    'ap-northeast-2',
+    'ap-south-1',
+    'sa-east-1',
+    'ca-central-1',
+    'ap-east-1',
+    'me-south-1',
+    'af-south-1'
+]
+
 def get_bucket_region(bucket_name):
     """
     Automatically detect the region of an S3 bucket.
+    First tries the get_bucket_location API.
+    If that fails (AccessDenied), tries to list objects in common regions.
     Returns the region name or None if detection fails.
     """
     try:
-        # Create a client without credentials for public access
+        # First attempt: Try get_bucket_location
         session = boto3.Session()
         config = botocore.config.Config(signature_version=botocore.UNSIGNED)
         
@@ -96,17 +121,52 @@ def get_bucket_region(bucket_name):
         
     except botocore.exceptions.ClientError as e:
         error_code = e.response['Error']['Code']
+        
         if error_code == 'NoSuchBucket':
             print(f"Error: Bucket '{bucket_name}' does not exist")
-        elif error_code == 'AccessDenied':
-            print(f"Error: Access denied when detecting region for bucket '{bucket_name}'")
-            print(f"The bucket may be private or you may need to specify the region explicitly")
+            return None
+        elif error_code in ['AccessDenied', '403']:
+            # If get_bucket_location is denied, try testing regions directly
+            print(f"get_bucket_location denied for '{bucket_name}', trying region detection via list_objects...")
+            return detect_region_by_listing(bucket_name)
         else:
             print(f"Error detecting region for bucket '{bucket_name}': {e}")
-        return None
+            return detect_region_by_listing(bucket_name)
+            
     except Exception as e:
         print(f"Unexpected error detecting region for bucket '{bucket_name}': {e}")
-        return None
+        return detect_region_by_listing(bucket_name)
+
+def detect_region_by_listing(bucket_name):
+    """
+    Detect bucket region by attempting to list objects in common regions.
+    Returns the first region that successfully lists objects, or None if all fail.
+    """
+    print(f"Attempting to detect region for '{bucket_name}' by testing common regions...")
+    
+    session = boto3.Session()
+    config = botocore.config.Config(signature_version=botocore.UNSIGNED)
+    
+    for region in COMMON_REGIONS:
+        try:
+            s3 = session.client('s3', region_name=region, config=config)
+            # Try to list objects with MaxKeys=1 for efficiency
+            s3.list_objects_v2(Bucket=bucket_name, MaxKeys=1)
+            print(f"Successfully detected region for bucket '{bucket_name}': {region}")
+            return region
+        except botocore.exceptions.ClientError as e:
+            error_code = e.response['Error']['Code']
+            # If we get a different error than region mismatch, the bucket might be in this region
+            if error_code == 'NoSuchBucket':
+                # Bucket doesn't exist at all
+                return None
+            # Continue trying other regions for other errors
+            continue
+        except Exception:
+            continue
+    
+    print(f"Failed to detect region for bucket '{bucket_name}' after trying all common regions")
+    return None
 
 def list_files_in_bucket(bucket_name, region):
     """
